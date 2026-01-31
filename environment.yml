@@ -1,0 +1,16 @@
+name: snapCal_env          # Ortamın adı
+channels:
+  - conda-forge            # Apple Silicon için en hızlı kütüphaneler buradan gelir
+  - defaults
+dependencies:
+  - python=3.10            # En stabil sürüm
+  - numpy                  # Matematiksel hesaplamalar
+  - pandas                 # Veri manipülasyonu
+  - matplotlib             # Görselleştirme (Derslerin için de lazım)
+  - seaborn                # Daha şık grafikler
+  - opencv                 # Görüntü işleme (Kamera ve resimler için)
+  - scikit-learn           # Veri setini bölmek (Train/Test split) için
+  - pip
+  - pip:
+    - ultralytics          # YOLOv11'in kalbi
+    - python-dotenv        # API anahtarları ve gizli ayarlar için
