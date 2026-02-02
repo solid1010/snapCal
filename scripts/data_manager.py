@@ -1,4 +1,3 @@
-import os
 import shutil
 import random
 import json
@@ -11,7 +10,6 @@ PROCESSED_PATH = Path("data/processed/yolo_dataset")
 
 # 2. Odaklanacağımız maksimum sınıf sayısı
 MAX_CLASSES = 10
-
 
 
 def setup_yolo_dirs():
@@ -29,7 +27,7 @@ def normalize_class_name(class_name: str) -> str:
 
 def load_meta_txt(metadata_path: Path,split_type: str) -> dict|None:
     """meta/train.txt veya meta/val.txt dosyasını yükler ve bir sözlük olarak döndürür."""
-    metadata_path = metadata_path /"meta" / f"{split_type}.txt"
+    metadata_path = metadata_path / f"{split_type}.txt"
     
     if not metadata_path.exists():
         return None
@@ -48,8 +46,6 @@ def load_meta_txt(metadata_path: Path,split_type: str) -> dict|None:
             cls, img_id = parts[0], parts[1]
             
             # Az sayıda kategori denediğimiz için filtreleme yapıyoruz.
-            if cls not in meta_dict:
-                continue
             # Sözlüğe ekle: {'pizza': ['123', '456']} yapısını kurar
             if cls not in meta_dict:
                 meta_dict[cls] = []
@@ -59,7 +55,7 @@ def load_meta_txt(metadata_path: Path,split_type: str) -> dict|None:
 
 def load_meta_json(metadata_path: Path,split_type: str) -> dict|None:
     """meta/train.json veya meta/val.json dosyasını yükler ve bir sözlük olarak döndürür."""
-    metadata_path = metadata_path / "meta" / f"{split_type}.json"
+    metadata_path = metadata_path / f"{split_type}.json"
     if not metadata_path.exists():
         return None
     with open(metadata_path, 'r') as f:
@@ -83,15 +79,36 @@ def filter_classes(meta_dict: dict,max_classes) -> dict:
     
     if isinstance(max_classes, list):
         norm_target_cls=[normalize_class_name(cls) for cls in max_classes]
-        return {k: v for k, v in meta_dict.items() if normalize_class_name(v) in norm_target_cls}
+        return {k: v for k, v in meta_dict.items() if normalize_class_name(k) in norm_target_cls}
     #int ise ilk N sınıfı döndürür
-    classes=sorted(meta.keys())[:max_classes]
-    return {k: meta[k] for k in classes}
-    
+    classes=sorted(meta_dict.keys())[:max_classes]
+    return {k: meta_dict[k] for k in classes}
+
+def generate_labels(img_path: Path | str, model, class_id: int, conf: float = 0.25) -> list[str]:
+    """YOLO ile görsel üzerinde bbox tahmini yapar; YOLO formatında etiket satırları döndürür.
+
+    Args:
+        img_path: Görsel dosya yolu (kopyalanmış veya kaynak).
+        model: Ultralytics YOLO modeli.
+        class_id: Bu görsele atanacak sınıf ID'si (0..N-1).
+        conf: Tespit güven eşiği (varsayılan 0.25).
+
+    Returns:
+        Her satır: "class_id x_center y_center width height" (normalize, 0-1).
+        Hiç kutu yoksa tek satır: "class_id 0.5 0.5 1.0 1.0".
+    """
+    results = model.predict(str(img_path), conf=conf, verbose=False)
+    lines = []
+    if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
+        for row in results[0].boxes.xywhn.cpu().numpy():
+            lines.append(f"{class_id} {row[0]:.6f} {row[1]:.6f} {row[2]:.6f} {row[3]:.6f}")
+    else:
+        lines.append(f"{class_id} 0.5 0.5 1.0 1.0")
+    return lines
 
 def resolve_image_path(images_dir: Path, rel_path: str) -> Path | None:
     """rel_path = 'Class_Name/123' -> images_dir/Class_Name/123.jpg veya varyant"""
-    base = images_dir /"images" / f"{rel_path}.jpg"
+    base = images_dir / f"{rel_path}.jpg"
     if base.exists():
         return base
     parts = rel_path.split("/", 1)
@@ -104,38 +121,80 @@ def resolve_image_path(images_dir: Path, rel_path: str) -> Path | None:
             return p
     return None
     
-def process_and_split_data(train_ratio=0.8):
+def process_and_split_data(class_names: list[str], images_root: Path, train_ratio=0.8):
     """Veri setini işler ve eğitim ve doğrulama setlerine böler.
-    Train test olarak ayrılmamış datasetlerde kullanılır."""
-
+    Train test olarak ayrılmamış datasetlerde kullanılır.
     
-    for class_name in MAX_CLASSES:
-        class_dir= RAW_DATA_PATH / class_name
+    Args:
+        class_names: İşlenecek sınıf isimleri listesi (örn. ['pizza', 'burger', ...])
+        images_root: Sınıf klasörlerinin bulunduğu ana dizin (örn. data/raw/my_dataset/images)
+        train_ratio: Eğitim seti oranı (varsayılan 0.8 -> %80 train, %20 val)
+    """
+    # Klasörleri oluştur
+    setup_yolo_dirs()
+    
+    # YOLO modelini yükle
+    model = YOLO("yolo11n.pt")
+    
+    # Sınıf -> ID eşlemesi
+    class_to_id = {c: i for i, c in enumerate(class_names)}
+    
+    for class_name in class_names:
+        class_dir = images_root / class_name
+        
+        if not class_dir.exists():
+            print(f"Uyarı: {class_dir} bulunamadı, atlanıyor.")
+            continue
         
         images = list(class_dir.glob("*.jpg"))
+        
+        if not images:
+            print(f"Uyarı: {class_name} klasöründe hiç görsel yok.")
+            continue
         
         random.shuffle(images)
         split_index = int(len(images) * train_ratio)
         train_images = images[:split_index]
         val_images = images[split_index:]
 
-        # Dosyaları kopyalama fonksiyonuna gönder
-        copy_to_dest(train_images, "train", class_name)
-        copy_to_dest(val_images, "val", class_name)
+        # Dosyaları kopyalama + etiketleme
+        copy_to_dest(train_images, "train", class_name, model, class_to_id)
+        copy_to_dest(val_images, "val", class_name, model, class_to_id)
+    
+    # data.yaml oluştur
+    yaml_path = PROCESSED_PATH / "data.yaml"
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        f.write(f"path: {PROCESSED_PATH.resolve()}\n")
+        f.write("train: images/train\n")
+        f.write("val: images/val\n")
+        f.write(f"nc: {len(class_names)}\n")
+        f.write("names:\n")
+        for i, name in enumerate(class_names):
+            f.write(f"  {i}: {name}\n")
+    
+    print(f"İşlem tamamlandı: {yaml_path}")
 
 
 
-def copy_to_dest(image_list, split_type, class_name):
-        """Görüntüleri ve etiketleri hedef klasörlere kopyalar."""
-        for img_path in image_list:
-             # Çakışmayı önlemek için yeni isim: "pizza_12345.jpg"
-            new_name = f"{class_name}_{img_path.name}"
-            
-            # Hedef yol: data/processed/yolo_dataset/train/images/pizza_12345.jpg
-            destination = PROCESSED_PATH / split_type / "images" / new_name
-            
-            # Kopyalama işlemi
-            shutil.copy(img_path, destination)
+def copy_to_dest(image_list, split_type, class_name, model, class_to_id):
+    """Görüntüleri ve etiketleri hedef klasörlere kopyalar.
+    Meta'sız datasetler için YOLO auto-labeling ile etiket oluşturur."""
+    for img_path in image_list:
+        # Çakışmayı önlemek için yeni isim: "pizza_12345.jpg"
+        new_name = f"{class_name}_{img_path.name}"
+        
+        # Hedef yol: data/processed/yolo_dataset/images/train/pizza_12345.jpg
+        dest_img = PROCESSED_PATH / "images" / split_type / new_name
+        shutil.copy(img_path, dest_img)
+        
+        # YOLO ile bbox tahmini
+        cid = class_to_id[class_name]
+        lines = generate_labels(dest_img, model, cid)
+        
+        # Etiket dosyasını yaz
+        lbl_path = PROCESSED_PATH / "labels" / split_type / (Path(new_name).stem + ".txt")
+        with open(lbl_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
 
 
 def run_pipeline():
@@ -145,9 +204,6 @@ def run_pipeline():
         raise ValueError(f"Meta dosyası {meta_dir} bulunamadı.")
 
     # Meta dosyalarını yükle
-    train_meta = load_meta(meta_dir, "train")
-    test_meta = load_meta(meta_dir, "test")
-
     # Sadece MAX_CLASSES sayısı kadar sınıf seç
     train_meta = filter_classes(load_meta(meta_dir, "train"), MAX_CLASSES)
     test_meta = filter_classes(load_meta(meta_dir, "test"), MAX_CLASSES)
@@ -173,20 +229,12 @@ def run_pipeline():
                 if not new_name.lower().endswith(".jpg"):
                     new_name += ".jpg"
 
-                dest_img=PROCESSED_PATH / split_type / "images" / new_name
+                dest_img=PROCESSED_PATH / "images"/ split_type / new_name
                 shutil.copy2(img_path,dest_img)
 
-                results= model.predict(str(img_path),conf=0.25,verbose=False)
-                lines=[]
-
-                if results and len(results)>0 and results[0].boxes is not None and len(results[0].boxes) > 0:
-                    for row in results[0].boxes.xywhn.cpu().numpy():
-                        lines.append(f"{cid} {row[0]:.6f} {row[1]:.6f} {row[2]:.6f} {row[3]:.6f}")
-                    
-                else:
-                    lines.append(f"{cid} 0.5 0.5 1.0 1.0")
-
+                lines = generate_labels(img_path, model, cid)
                 lbl_path = PROCESSED_PATH / "labels" / split_type / (Path(new_name).stem + ".txt")
+
                 with open(lbl_path,"w",encoding="utf-8") as f:
                     f.write("\n".join(lines))
                 count+=1
@@ -215,4 +263,7 @@ def run_pipeline():
 
     print(f"Bitti.Train :{train_count}, Val: {val_count}")
     print(f"data.yaml: {yaml_path}")
+
+if __name__ == "__main__":
+    run_pipeline()
 
