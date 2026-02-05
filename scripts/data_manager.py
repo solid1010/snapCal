@@ -7,6 +7,10 @@ from ultralytics import YOLO
 # 1. Sabit Yollar
 RAW_DATA_PATH = Path("data/raw/food-101")
 PROCESSED_PATH = Path("data/processed/yolo_dataset")
+# Modelleri 'models/' klasöründe topla
+MODEL_PATH = Path("models/pretrained")
+MODEL_PATH.mkdir(parents=True, exist_ok=True)
+
 
 # 2. Odaklanacağımız maksimum sınıf sayısı
 MAX_CLASSES = 10
@@ -134,7 +138,7 @@ def process_and_split_data(class_names: list[str], images_root: Path, train_rati
     setup_yolo_dirs()
     
     # YOLO modelini yükle
-    model = YOLO("yolo11n.pt")
+    model = YOLO(MODEL_PATH / "yolo11n.pt")
     
     # Sınıf -> ID eşlemesi
     class_to_id = {c: i for i, c in enumerate(class_names)}
@@ -214,7 +218,7 @@ def run_pipeline():
     print(f"Seçilen sınıflar {class_names} ve {len(class_names)} sınıf seçildi.")
 
     setup_yolo_dirs()
-    model = YOLO("yolo11n.pt")
+    model = YOLO(MODEL_PATH / "yolo11n.pt")
 
     def process_image(meta:dict,split_type:str):
         count=0
