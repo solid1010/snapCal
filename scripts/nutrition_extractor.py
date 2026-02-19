@@ -10,8 +10,10 @@ SURVEY_PATH = BASE_PATH / "survey"
 FOUNDATION_PATH = BASE_PATH / "foundation"
 # Veritabanının kaydedileceği klasör
 PROCESSED_DATA_PATH = Path("data/processed")
-# Klasör yoksa oluştur (Mühendislik önlemi)
+# Klasör yoksa oluştur
 PROCESSED_DATA_PATH.mkdir(parents=True, exist_ok=True)
+# Analiz yapacağımız val etiketlerinin yolu
+VAL_LABELS_PATH = Path("data/processed/yolo_dataset/labels/val")
 
 TARGET_CLASSES = [
     'apple_pie', 'baby_back_ribs', 'baklava', 'beef_carpaccio', 
@@ -26,9 +28,36 @@ EXCEPTIONS = {
     'baby_back_ribs': 'Pork ribs, cooked'    # Daha genel ve doğru bir kategori
 }
 
-# Modeli küresel olarak yükle (Hafif ve hızlı)
+# Modeli yükle 
 print("🧠 NLP Modeli yükleniyor...")
 model = SentenceTransformer('all-MiniLM-L6-v2')
+
+def get_average_mask_areas():
+    """Val setindeki etiketlerden sınıf başına ortalama piksel alanını hesaplar."""
+    VAL_LABELS_PATH = Path("data/processed/yolo_dataset/labels/val")
+    class_areas = {i: [] for i in range(len(TARGET_CLASSES))}
+    
+    if not VAL_LABELS_PATH.exists():
+        return {i: 40000 for i in range(len(TARGET_CLASSES))} # Fallback değeri
+
+    for label_file in VAL_LABELS_PATH.glob("*.txt"):
+        with open(label_file, 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 3: continue
+                
+                cls_id = int(parts[0])
+                coords = [float(x) for x in parts[1:]] # Normalize x,y çiftleri
+                
+                # Shoelace formülü ile normalize alan hesabı
+                xs, ys = coords[0::2], coords[1::2]
+                area = 0.5 * abs(sum(xs[i]*ys[i+1] - xs[i+1]*ys[i] for i in range(-1, len(xs)-1)))
+                
+                # 640x640 çözünürlüğe göre piksel alanına çevir
+                pixel_area = area * (640 * 640) 
+                class_areas[cls_id].append(pixel_area)
+
+    return {cid: (sum(areas)/len(areas) if areas else 40000) for cid, areas in class_areas.items()}
 
 def load_usda_data(folder_path):
     """Belirtilen klasördeki CSV'leri yükler."""
@@ -64,6 +93,9 @@ def build_snapcal_db(survey_path, foundation_path, classes):
 
     db_path = PROCESSED_DATA_PATH / "snapcal_local.db"
 
+    # Referans alanları hesapla
+    reference_areas = get_average_mask_areas()
+
     # SQLite Bağlantısını Kur
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -79,7 +111,8 @@ def build_snapcal_db(survey_path, foundation_path, classes):
                 protein REAL,
                 fat REAL,
                 carbs REAL,
-                portion_g REAL
+                portion_g REAL,
+                ref_area REAL
             )
         ''')
 
@@ -92,7 +125,7 @@ def build_snapcal_db(survey_path, foundation_path, classes):
     ]
 
 
-    for cls in classes:
+    for idx,cls in enumerate(classes):
         found = False
         search_term = EXCEPTIONS.get(cls, cls.replace("_", " "))
 
@@ -135,10 +168,11 @@ def build_snapcal_db(survey_path, foundation_path, classes):
                 portion = p_df[p_df["fdc_id"] == f_id]
                 p_weight = float(portion.iloc[0]["gram_weight"]) if not portion.empty else 100.0
 
+                ref_a = reference_areas.get(idx, 40000)
                 # Veritabanına ekle
-                cursor.execute('''INSERT INTO nutrition VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
+                cursor.execute('''INSERT INTO nutrition VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
                     (cls, src["name"], best_row['description'], macro_vals['calories'], 
-                    macro_vals['protein'], macro_vals['fat'], macro_vals['carbs'], p_weight))
+                    macro_vals['protein'], macro_vals['fat'], macro_vals['carbs'], p_weight, ref_a))
                 
                 print(f"✅ {cls} -> {best_row['description']} | Skor: {current_score:.2f} | (Kaynak: {src['name']}) | {method_text}")
                 found = True

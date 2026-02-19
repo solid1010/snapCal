@@ -15,21 +15,21 @@ def train_model():
         print("GPU veya MPS destekli cihaz bulunamadı. Eğitim CPU üzerinde gerçekleştirilecek.")
 
     # Model yükleme
-    model = YOLO("models/pretrained/yolo11n.pt")
+    model = YOLO("models/pretrained/yolo11n-seg.pt")
 
     # Eğitimi başlat
     model.train(data="data/processed/yolo_dataset/data.yaml", 
-                epochs=10,
-                imgsz=640,
-                batch=16,
-                device=device,
-                conf=0.25,        # Sadece %25+ emin olduğun kutuları NMS'e sok
-                max_det=100,      # Resim başına maksimum 100 kutu ara (Food-101 için fazlasıyla yeterli)
-                iou=0.45,         # Kutu çakışma eşiği
-                name="snapCal_v1",
-                project="runs/train",
-                optimizer="auto",
-                plots=True)
+            epochs=10, # Segmentasyon daha detaylı olduğu için epoch sayısını artırmak iyidir
+            imgsz=640,
+            device=device,
+            name="snapCal_v1_seg",
+            project="runs/train",
+            batch=16,
+            workers=4,
+            cache=True,
+            amp=True, # Karışık hassasiyetli eğitim ile hızlandırma
+            simplify=True
+            )
     
     print("Eğitim tamamlandı.")
 

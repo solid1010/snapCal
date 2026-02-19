@@ -89,25 +89,23 @@ def filter_classes(meta_dict: dict,max_classes) -> dict:
     return {k: meta_dict[k] for k in classes}
 
 def generate_labels(img_path: Path | str, model, class_id: int, conf: float = 0.25) -> list[str]:
-    """YOLO ile görsel üzerinde bbox tahmini yapar; YOLO formatında etiket satırları döndürür.
-
-    Args:
-        img_path: Görsel dosya yolu (kopyalanmış veya kaynak).
-        model: Ultralytics YOLO modeli.
-        class_id: Bu görsele atanacak sınıf ID'si (0..N-1).
-        conf: Tespit güven eşiği (varsayılan 0.25).
-
-    Returns:
-        Her satır: "class_id x_center y_center width height" (normalize, 0-1).
-        Hiç kutu yoksa tek satır: "class_id 0.5 0.5 1.0 1.0".
-    """
+    """YOLO-seg ile görsel üzerinde poligon (maske) tahmini yapar."""
+    # Segmentasyon modeli kullanılarak tahmin yapılır
     results = model.predict(str(img_path), conf=conf, verbose=False)
     lines = []
-    if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
-        for row in results[0].boxes.xywhn.cpu().numpy():
-            lines.append(f"{class_id} {row[0]:.6f} {row[1]:.6f} {row[2]:.6f} {row[3]:.6f}")
+    
+    # Eğer model bir maske (segmentasyon) bulduysa
+    if results and len(results) > 0 and results[0].masks is not None:
+        # Her bir nesnenin poligon noktalarını al (normalize edilmiş formatta)
+        for mask in results[0].masks.xyn:
+            # Poligon noktalarını düz bir string haline getir: "class x1 y1 x2 y2..."
+            polygon_points = " ".join([f"{coord:.6f}" for pair in mask for coord in pair])
+            lines.append(f"{class_id} {polygon_points}")
     else:
-        lines.append(f"{class_id} 0.5 0.5 1.0 1.0")
+        # Maske bulunamazsa (fallback), kutuyu poligon gibi simüle et veya boş bırak
+        # Şimdilik maske bulunamayan görselleri eğitime katmamak daha sağlıklı olabilir.
+        pass
+    
     return lines
 
 def resolve_image_path(images_dir: Path, rel_path: str) -> Path | None:
@@ -138,7 +136,7 @@ def process_and_split_data(class_names: list[str], images_root: Path, train_rati
     setup_yolo_dirs()
     
     # YOLO modelini yükle
-    model = YOLO(MODEL_PATH / "yolo11n.pt")
+    model = YOLO(MODEL_PATH / "yolo11n-seg.pt")
     
     # Sınıf -> ID eşlemesi
     class_to_id = {c: i for i, c in enumerate(class_names)}
@@ -218,7 +216,7 @@ def run_pipeline():
     print(f"Seçilen sınıflar {class_names} ve {len(class_names)} sınıf seçildi.")
 
     setup_yolo_dirs()
-    model = YOLO(MODEL_PATH / "yolo11n.pt")
+    model = YOLO(MODEL_PATH / "yolo11n-seg.pt")
 
     def process_image(meta:dict,split_type:str):
         count=0
