@@ -55,32 +55,43 @@ while cap.isOpened():
     results = model(frame, conf=0.7, verbose=False)
 
     for r in results:
-        if r.masks is not None: # Maske tespiti varsa
+        if r.masks is not None:
+            # Frame üzerine şeffaf bir katman oluştur (Maske boyama için)
+            overlay = frame.copy()
+            
             for i, mask in enumerate(r.masks.data):
-                # 1. Alan Hesabı (Piksel Sayısı)
-                current_mask_area = int(mask.sum())
+                # Maskeyi 160x160'tan 640x640'a büyütüyoruz ki DB ile eşleşsin
+                mask_np = mask.cpu().numpy()
+                mask_resized = cv2.resize(mask_np, (640, 640))
+                current_mask_area = int(mask_resized.sum())
                 
                 cls_id = int(r.boxes.cls[i])
                 cls_name = model.names[cls_id]
                 nut_data = get_nutrition_info(cls_name)
                 
-                x1, y1, x2, y2 = map(int, r.boxes.xyxy[i])
-                
                 if nut_data:
-                    # 2. Veriyi Parçala (7 Sütun)
                     desc, kcal_100, prot_100, fat_100, carb_100, p_weight, r_area = nut_data
-                    
-                    # 3. Porsiyon Ölçekleme (ref_area yoksa 40000 kullan)
                     ref_area_val = r_area if (r_area and r_area > 0) else 40000
-                    scale_factor = current_mask_area / ref_area_val
                     
+                    # Artık her iki değer de 640x640 tabanında
+                    scale_factor = current_mask_area / ref_area_val
                     est_weight = p_weight * scale_factor
                     final_kcal = (kcal_100 / 100) * est_weight
                     
-                    # UI Güncelleme
+                    # Maskeyi orijinal görüntü boyutuna getir
+                    h, w = frame.shape[:2]
+                    full_mask = cv2.resize(mask_np, (w, h))
+                    
+                    # Tespit edilen bölgeyi yeşile boya
+                    overlay[full_mask > 0.5] = (0, 255, 0) 
+                    
+                    # Yazıları ve Kutuyu çiz
+                    x1, y1, x2, y2 = map(int, r.boxes.xyxy[i])
                     label = f"{cls_name.upper()}: ~{est_weight:.0f}g | {final_kcal:.0f} kcal"
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.5, (0, 255, 0), 2)
+
+            # Şeffaf maskeyi orijinal görüntüyle birleştir (%30 şeffaflık)
+            cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
     
     # Görüntüyü göster
     cv2.imshow("snapCal MVP - Real Time Nutrition", frame)
